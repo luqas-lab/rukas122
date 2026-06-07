@@ -36,7 +36,7 @@ MODEL_PATH = '/home/luq/fyp2/ppo_force_control.zip'  # Trained PPO model file
 # These values were found by physical calibration of the real arm.
 LIMITS = {
     'SHOULDER_R': {'rest':   0, 'min':  0, 'max': 180},  # CH0 — right shoulder
-    'SHOULDER_L': {'rest': 180, 'min': 50, 'max': 180},  # CH1 — left shoulder (inverted)
+    'SHOULDER_L': {'rest': 180, 'min': 50, 'max': 190},  # CH1 — left shoulder (inverted, max>180 allows downward movement)
     'ELBOW':      {'rest':   0, 'min':  0, 'max': 110},  # CH2 — elbow joint
     'WRIST_P':    {'rest':  96, 'min':  0, 'max': 170},  # CH3 — wrist pitch (up/down)
     'WRIST_R':    {'rest':   0, 'min':  0, 'max': 175},  # CH4 — wrist roll (rotate)
@@ -44,7 +44,7 @@ LIMITS = {
 }
 
 # ── Stepper Motor Settings ───────────────────────────────────
-STEPPER_STEPS = 50     # How many steps per button press (base rotation speed)
+STEPPER_STEPS = 150    # Steps per command — increased for faster base rotation
 STEPPER_MAX   =  550   # Maximum steps clockwise from home
 STEPPER_MIN   = -300   # Maximum steps counter-clockwise from home
 
@@ -156,7 +156,7 @@ def run_rl_grip(ser, model, obj, ctrl):
 
     while step < 10:                         # Maximum 10 control steps
         pygame.event.pump()
-        if ctrl.get_button(1):               # Circle button = manual release
+        if ctrl.get_button(0):               # Cross button = manual release (cancel AI grip)
             print("Released by user")
             break
 
@@ -251,8 +251,10 @@ def main():
     # ── Control Settings ─────────────────────────────────────
     AI_MODE      = False       # True when RL model is controlling gripper
     selected_obj = OBJECTS[3]  # Default object = Medium
-    DEAD         = 0.25        # Deadzone — ignore stick movement below this value
-    STEP         = 2           # Degrees per control loop for joints
+    DEAD         = 0.25        # Deadzone for right stick (smaller, offset-corrected)
+    DEAD_LEFT    = 0.35        # Deadzone for left stick (higher — noisier axis)
+    STEP         = 3           # Degrees per loop for right stick joints
+    SHOULDER_STEP = 4          # Degrees per loop for shoulders (heavier load, needs more)
     GRIP_STEP    = 2           # Degrees per press for gripper open/close
 
     prev_buttons      = [0] * ctrl.get_numbuttons()
@@ -329,8 +331,9 @@ def main():
             AI_MODE = False
             go_home(ser)
 
-        # Cross = Activate AI grip mode
-        if new[0] and not AI_MODE:
+        # FIX: Cross and Circle were swapped — corrected button indices
+        # Circle (Btn 1) = Activate AI grip mode
+        if new[1] and not AI_MODE:
             if model is not None:
                 AI_MODE = True
                 run_rl_grip(ser, model, selected_obj, ctrl)
@@ -338,8 +341,8 @@ def main():
             else:
                 print("No RL model — AI grip unavailable")
 
-        # Circle = Release gripper (open)
-        if new[1]:
+        # Cross (Btn 0) = Release gripper (open)
+        if new[0]:
             AI_MODE = False
             send(ser, 'GRIPPER', LIMITS['GRIPPER']['rest'])
             print("Gripper open")
@@ -348,14 +351,15 @@ def main():
         if not AI_MODE:
             now = time.time()
 
-            # Left stick U/D → Both shoulders move together
-            # Negative ly (push up) increases shoulder angle
-            if abs(ly) > DEAD:
-                send(ser, 'SHOULDER_R', angles['SHOULDER_R'] - (ly * STEP))
-                send(ser, 'SHOULDER_L', angles['SHOULDER_L'] + (ly * STEP))
+            # Left stick U/D → Both shoulders move together (synchronised)
+            # Push up (ly<0): SHOULDER_R increases, SHOULDER_L decreases (inverted servo)
+            # SHOULDER_L max is set to 190 so it can move in both directions from rest=180
+            if abs(ly) > DEAD_LEFT:
+                send(ser, 'SHOULDER_R', angles['SHOULDER_R'] - (ly * SHOULDER_STEP))
+                send(ser, 'SHOULDER_L', angles['SHOULDER_L'] + (ly * SHOULDER_STEP))
 
             # Left stick L/R → Wrist Roll
-            if abs(lx) > DEAD:
+            if abs(lx) > DEAD_LEFT:
                 send(ser, 'WRIST_R', angles['WRIST_R'] + (lx * STEP))
 
             # FIX: Right stick U/D → Elbow
@@ -369,8 +373,8 @@ def main():
                 send(ser, 'WRIST_P', angles['WRIST_P'] + ((rx_fixed - 1.0) * STEP))
 
             # L1/R1 = Base rotation (stepper motor)
-            # Rate-limited to once every 0.15s to prevent flooding Arduino
-            if now - last_stepper_time > 0.15:
+            # Rate-limited to once every 0.06s — reduced for faster base rotation
+            if now - last_stepper_time > 0.06:
                 if curr[4]:   # L1 = CCW
                     send_stepper(ser, False)
                     print(f"Base CCW | pos:{stepper_pos}")
