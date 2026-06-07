@@ -138,6 +138,105 @@ def read_fsr(ser):
                     break
     return fsr_l, fsr_r
 
+# ── calibrate_fsr() ─────────────────────────────────────────
+# Interactive FSR calibration routine.
+# Step 1: reads baseline (gripper open, no contact) → FSR_ZERO
+# Step 2: user grips each object and presses Cross to record the value
+# Step 3: prints a calibration table and saves to fsr_calibration.txt
+#
+# The raw-to-Newton formula after calibration:
+#   force_N = (raw - FSR_ZERO) / (FSR_MAX - FSR_ZERO) * MAX_FORCE_N
+# where MAX_FORCE_N is set by the heaviest object gripped during calibration.
+def calibrate_fsr(ser, ctrl):
+    import json, os
+    print("\n" + "=" * 50)
+    print("  FSR CALIBRATION MODE")
+    print("=" * 50)
+    print("Step 1: Make sure gripper is OPEN (no object)")
+    print("Press Cross to record baseline...")
+
+    # Wait for Cross press
+    while True:
+        pygame.event.pump()
+        if ctrl.get_button(0):
+            break
+        time.sleep(0.05)
+    time.sleep(0.1)  # debounce
+
+    fsr_l, fsr_r = read_fsr(ser)
+    baseline_l, baseline_r = fsr_l, fsr_r
+    print(f"  Baseline recorded → Left:{baseline_l}  Right:{baseline_r}")
+    time.sleep(0.5)
+
+    calib = {"baseline_l": baseline_l, "baseline_r": baseline_r, "objects": []}
+
+    objects_to_test = [
+        {"name": "Very Fragile", "expected_N": 0.5},
+        {"name": "Fragile",      "expected_N": 1.0},
+        {"name": "Medium",       "expected_N": 2.0},
+        {"name": "Robust",       "expected_N": 5.0},
+        {"name": "Very Robust",  "expected_N": 10.0},
+    ]
+
+    print("\nStep 2: Grip each object firmly and press Cross to record.")
+    print("        Press Circle to skip an object.\n")
+
+    for obj in objects_to_test:
+        print(f"  → Grip '{obj['name']}' object now, then press Cross...")
+        while True:
+            pygame.event.pump()
+            if ctrl.get_button(0):   # Cross = record
+                time.sleep(0.1)
+                fsr_l, fsr_r = read_fsr(ser)
+                avg = (fsr_l + fsr_r) // 2
+                calib["objects"].append({
+                    "name":       obj["name"],
+                    "expected_N": obj["expected_N"],
+                    "raw_l":      fsr_l,
+                    "raw_r":      fsr_r,
+                    "raw_avg":    avg,
+                })
+                print(f"    Recorded → Left:{fsr_l}  Right:{fsr_r}  Avg:{avg}")
+                time.sleep(0.4)
+                break
+            if ctrl.get_button(1):   # Circle = skip
+                print(f"    Skipped.")
+                time.sleep(0.4)
+                break
+            time.sleep(0.05)
+
+    # Compute linear scale factor from highest reading
+    if calib["objects"]:
+        max_entry = max(calib["objects"], key=lambda x: x["raw_avg"])
+        fsr_range = max(max_entry["raw_avg"] - baseline_l, 1)
+        scale_N_per_unit = max_entry["expected_N"] / fsr_range
+
+        print("\n" + "=" * 50)
+        print("  CALIBRATION RESULTS")
+        print("=" * 50)
+        print(f"  Baseline (open): L={baseline_l}  R={baseline_r}")
+        print(f"  Scale factor   : {scale_N_per_unit:.6f} N per raw unit")
+        print(f"\n  Object readings:")
+        for o in calib["objects"]:
+            net = o["raw_avg"] - baseline_l
+            est = net * scale_N_per_unit
+            print(f"    {o['name']:15s}  raw_avg={o['raw_avg']:4d}  "
+                  f"net={net:4d}  estimated={est:.3f}N  expected={o['expected_N']}N")
+
+        calib["scale_N_per_unit"] = scale_N_per_unit
+
+        # Save calibration file next to this script
+        save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "fsr_calibration.txt")
+        with open(save_path, "w") as f:
+            json.dump(calib, f, indent=2)
+        print(f"\n  Saved to: {save_path}")
+    else:
+        print("  No objects recorded — calibration skipped.")
+
+    print("=" * 50)
+    print("  Calibration done. Returning to normal mode.\n")
+
 # ── run_rl_grip() ────────────────────────────────────────────
 # This is the AI grip function — runs when Cross button is pressed.
 # Uses the trained PPO reinforcement learning model to decide
@@ -277,6 +376,7 @@ def main():
     print("  Square (Btn 3)   → EMERGENCY STOP")
     print("  L3 (Btn 11)      → Select Very Fragile")
     print("  R3 (Btn 12)      → Select Fragile")
+    print("  L3 + R3 together → FSR Calibration mode")
     print("=" * 50)
     print(f"Object: {selected_obj['name']}\n")
 
@@ -311,7 +411,15 @@ def main():
         # Detect NEW button presses (just pressed this loop, not held)
         new  = [curr[i] and not prev_buttons[i] for i in range(len(curr))]
 
-        # Object selection (L3/R3 buttons)
+        # L3 + R3 held together = enter FSR calibration mode
+        if curr[11] and curr[12]:
+            print("Entering FSR calibration...")
+            calibrate_fsr(ser, ctrl)
+            # reset button state to avoid spurious triggers after returning
+            prev_buttons = [ctrl.get_button(i) for i in range(ctrl.get_numbuttons())]
+            continue
+
+        # Object selection (L3 or R3 alone)
         if new[11]:
             selected_obj = OBJECTS[1]
             print(f"Object: {selected_obj['name']}")
@@ -368,9 +476,9 @@ def main():
             if abs(ry_fixed - 1.0) > DEAD:
                 send(ser, 'ELBOW', angles['ELBOW'] + ((ry_fixed - 1.0) * STEP))
 
-            # FIX: Right stick L/R → Wrist Pitch
+            # FIX: Right stick L/R → Wrist Pitch (direction inverted to match physical)
             if abs(rx_fixed - 1.0) > DEAD:
-                send(ser, 'WRIST_P', angles['WRIST_P'] + ((rx_fixed - 1.0) * STEP))
+                send(ser, 'WRIST_P', angles['WRIST_P'] - ((rx_fixed - 1.0) * STEP))
 
             # L1/R1 = Base rotation (stepper motor)
             # Rate-limited to once every 0.06s — reduced for faster base rotation
