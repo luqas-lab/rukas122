@@ -96,11 +96,22 @@ def send_stepper(ser, cw):
 # Called when Triangle button is pressed on PS4 controller.
 def go_home(ser):
     global stepper_pos
-    print("Going home...")
+    print("Going home (slow)...")
+    # Move each joint slowly by stepping in small increments toward the rest angle
+    SLOW_STEP   = 2    # degrees per increment
+    SLOW_DELAY  = 0.03 # seconds between each increment
     for joint in LIMITS:
-        send(ser, joint, LIMITS[joint]['rest'])  # Move each joint to rest angle
-        time.sleep(0.2)                          # Small delay between each joint
-    ser.write(b"STEPPERHOME\n")                  # Tell Arduino to return stepper to 0
+        target = LIMITS[joint]['rest']
+        current = angles[joint]
+        # Walk toward target in small steps
+        while current != target:
+            if current < target:
+                current = min(current + SLOW_STEP, target)
+            else:
+                current = max(current - SLOW_STEP, target)
+            send(ser, joint, current)
+            time.sleep(SLOW_DELAY)
+    ser.write(b"STEPPERHOME\n")
     stepper_pos = 0
     print("Home done!")
 
@@ -255,7 +266,7 @@ def run_rl_grip(ser, model, obj, ctrl):
 
     while step < 10:                         # Maximum 10 control steps
         pygame.event.pump()
-        if ctrl.get_button(0):               # Cross button = manual release (cancel AI grip)
+        if ctrl.get_button(1):               # Circle button = cancel AI grip and release
             print("Released by user")
             break
 
@@ -439,9 +450,8 @@ def main():
             AI_MODE = False
             go_home(ser)
 
-        # FIX: Cross and Circle were swapped — corrected button indices
-        # Circle (Btn 1) = Activate AI grip mode
-        if new[1] and not AI_MODE:
+        # Cross (Btn 0) = Activate AI grip mode
+        if new[0] and not AI_MODE:
             if model is not None:
                 AI_MODE = True
                 run_rl_grip(ser, model, selected_obj, ctrl)
@@ -449,8 +459,8 @@ def main():
             else:
                 print("No RL model — AI grip unavailable")
 
-        # Cross (Btn 0) = Release gripper (open)
-        if new[0]:
+        # Circle (Btn 1) = Release gripper (open)
+        if new[1]:
             AI_MODE = False
             send(ser, 'GRIPPER', LIMITS['GRIPPER']['rest'])
             print("Gripper open")
@@ -492,15 +502,17 @@ def main():
                     print(f"Base CW  | pos:{stepper_pos}")
                     last_stepper_time = now
 
-            # FIX: L2/R2 = Gripper open/close (analog triggers, not buttons)
-            # Trigger value > 0.1 means it is being pressed.
-            # Rate-limited to once every 0.08s for smooth movement.
-            if now - last_grip_time > 0.08:
+            # L2/R2 = Gripper open/close (analog triggers, not buttons)
+            # Scale step by how hard the trigger is pressed for variable speed.
+            # Rate-limited to once every 0.04s for faster response.
+            if now - last_grip_time > 0.04:
                 if l2 > 0.1:    # L2 held = close gripper
-                    send(ser, 'GRIPPER', angles['GRIPPER'] + GRIP_STEP)
+                    scaled = int(GRIP_STEP * ((l2 + 1.0) / 2.0) * 3) + 1
+                    send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
                     last_grip_time = now
                 elif r2 > 0.1:  # R2 held = open gripper
-                    send(ser, 'GRIPPER', angles['GRIPPER'] - GRIP_STEP)
+                    scaled = int(GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
+                    send(ser, 'GRIPPER', angles['GRIPPER'] - scaled)
                     last_grip_time = now
 
         prev_buttons = curr    # Save current buttons for next loop comparison
