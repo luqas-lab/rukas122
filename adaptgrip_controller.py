@@ -28,6 +28,13 @@ PORT       = '/dev/ttyUSB0'                    # Arduino USB port on Linux
 BAUD       = 9600                              # Must match Arduino Serial.begin(9600)
 MODEL_PATH = '/home/luq/fyp2/ppo_force_control.zip'  # Trained PPO model file
 
+# ── Demo Mode Setting ────────────────────────────────────────
+# Used when FSR is not yet calibrated — bypasses RL force output
+# and grips at a fixed safe angle. Increase by 5° until it holds
+# the object without crushing. Set to False to use full RL mode.
+DEMO_MODE         = True
+DEMO_GRIPPER_ANGLE = 60   # degrees — start here, tune upward in steps of 5
+
 # ── Joint Limits (Calibrated) ────────────────────────────────
 # Each joint has three values:
 #   rest = home position angle (where arm goes when HOME is pressed)
@@ -258,6 +265,23 @@ def calibrate_fsr(ser, ctrl):
 # And outputs a force value (0.1N to damage_limit).
 # That force is converted to a servo angle and sent to the gripper.
 def run_rl_grip(ser, model, obj, ctrl):
+    # DEMO_MODE: skip RL, use a fixed safe angle until FSR is calibrated
+    if DEMO_MODE:
+        print(f"\nDEMO GRIP — fixed angle {DEMO_GRIPPER_ANGLE}° "
+              f"(DEMO_MODE=True, FSR not calibrated)")
+        print("Press Circle to release\n")
+        send(ser, 'GRIPPER', DEMO_GRIPPER_ANGLE)
+        fsr_l, fsr_r = read_fsr(ser)
+        print(f"FSR readings → Left:{fsr_l}  Right:{fsr_r}")
+        print("Holding... press Circle to release")
+        while True:
+            pygame.event.pump()
+            if ctrl.get_button(1):   # Circle = release
+                print("Released")
+                break
+            time.sleep(0.05)
+        return
+
     print(f"\nAI GRIP — {obj['name']} | {obj['damage']}N limit")
     print("Press Circle to release\n")
     step       = 0
@@ -299,6 +323,101 @@ def run_rl_grip(ser, model, obj, ctrl):
             break
 
         time.sleep(0.05)
+
+# ── auto_pick_and_place() ────────────────────────────────────
+# Automated pick-and-place sequence for demo.
+# Triggered by Options button (Btn 9).
+#
+# Sequence:
+#   1. Open gripper and raise arm to approach position
+#   2. Lower arm down to object
+#   3. Close gripper (DEMO_GRIPPER_ANGLE or full RL grip)
+#   4. Lift arm back up
+#   5. Rotate base to place position
+#   6. Lower arm to place
+#   7. Open gripper (release object)
+#   8. Lift and rotate base back home
+#
+# Adjust the waypoint angles below to match your physical setup.
+# PLACE_STEPS = how many stepper steps to rotate to the place position.
+PLACE_STEPS = 250   # steps CW to rotate from pick → place position
+
+def auto_pick_and_place(ser):
+    global stepper_pos
+
+    def wp(joint, angle, delay=0.8):
+        """Send one waypoint and wait for servo to reach it."""
+        send(ser, joint, angle)
+        time.sleep(delay)
+
+    def stepper_move_wait(steps, cw, delay=1.5):
+        direction = "CW" if cw else "CCW"
+        ser.write(f"STEPPER:{direction}:{steps}\n".encode())
+        if cw:
+            stepper_pos += steps
+        else:
+            stepper_pos -= steps
+        time.sleep(delay)
+
+    print("\n" + "=" * 40)
+    print("  AUTO PICK AND PLACE — starting")
+    print("=" * 40)
+
+    # ── 1. Open gripper and raise to approach ─────────────────
+    print("Step 1: Open gripper, move to approach position")
+    wp('GRIPPER',    0)         # open gripper fully
+    wp('WRIST_P',   96)         # wrist to neutral
+    wp('ELBOW',     30)         # elbow mid
+    wp('SHOULDER_R', 60)        # raise shoulder
+    wp('SHOULDER_L', 120)
+    time.sleep(0.5)
+
+    # ── 2. Lower arm to object ─────────────────────────────────
+    print("Step 2: Lower to object")
+    wp('ELBOW',     75)
+    wp('WRIST_P',  130)
+    time.sleep(0.5)
+
+    # ── 3. Close gripper ──────────────────────────────────────
+    print(f"Step 3: Grip object (angle={DEMO_GRIPPER_ANGLE}°)")
+    wp('GRIPPER', DEMO_GRIPPER_ANGLE, delay=1.0)
+    fsr_l, fsr_r = read_fsr(ser)
+    print(f"        FSR → Left:{fsr_l}  Right:{fsr_r}")
+    time.sleep(0.5)
+
+    # ── 4. Lift arm with object ───────────────────────────────
+    print("Step 4: Lift")
+    wp('WRIST_P',   96)
+    wp('ELBOW',     30)
+    time.sleep(0.5)
+
+    # ── 5. Rotate base to place position ─────────────────────
+    print(f"Step 5: Rotate base CW {PLACE_STEPS} steps")
+    stepper_move_wait(PLACE_STEPS, cw=True, delay=2.0)
+
+    # ── 6. Lower arm to place position ───────────────────────
+    print("Step 6: Lower to place")
+    wp('ELBOW',     75)
+    wp('WRIST_P',  130)
+    time.sleep(0.5)
+
+    # ── 7. Release object ─────────────────────────────────────
+    print("Step 7: Release")
+    wp('GRIPPER', 0, delay=1.0)
+    time.sleep(0.3)
+
+    # ── 8. Lift and return base ───────────────────────────────
+    print("Step 8: Return home")
+    wp('WRIST_P',   96)
+    wp('ELBOW',     30)
+    stepper_move_wait(PLACE_STEPS, cw=False, delay=2.0)
+
+    # Go back to full rest
+    go_home(ser)
+
+    print("=" * 40)
+    print("  AUTO PICK AND PLACE — done")
+    print("=" * 40 + "\n")
 
 # ── main() ───────────────────────────────────────────────────
 # Main program — runs everything.
@@ -381,10 +500,11 @@ def main():
     print("  R1 held          → Base CW  (max +550)")
     print("  L2 held          → Gripper CLOSE")
     print("  R2 held          → Gripper OPEN")
-    print("  Cross  (Btn 0)   → AI grip ON")
+    print("  Cross  (Btn 0)   → AI grip ON (or demo grip if DEMO_MODE=True)")
     print("  Circle (Btn 1)   → Release gripper")
-    print("  Triangle(Btn 2)  → Go to Home")
+    print("  Triangle(Btn 2)  → Go to Home (slow)")
     print("  Square (Btn 3)   → EMERGENCY STOP")
+    print("  Options(Btn 9)   → Auto pick and place sequence")
     print("  L3 (Btn 11)      → Select Very Fragile")
     print("  R3 (Btn 12)      → Select Fragile")
     print("  L3 + R3 together → FSR Calibration mode")
@@ -449,6 +569,11 @@ def main():
         if new[2]:
             AI_MODE = False
             go_home(ser)
+
+        # Options (Btn 9) = Auto pick and place sequence
+        if new[9]:
+            AI_MODE = False
+            auto_pick_and_place(ser)
 
         # Cross (Btn 0) = Activate AI grip mode
         if new[0] and not AI_MODE:
