@@ -167,19 +167,50 @@ def read_fsr(ser):
 # where MAX_FORCE_N is set by the heaviest object gripped during calibration.
 def calibrate_fsr(ser, ctrl):
     import json, os
+
+    CALIB_GRIP_STEP = 5     # degrees per L2/R2 press inside calibration
+    last_grip_time  = 0
+
+    def handle_gripper():
+        """Allow L2/R2 to open/close gripper during calibration waits."""
+        nonlocal last_grip_time
+        now = time.time()
+        if now - last_grip_time < 0.04:
+            return
+        l2 = ctrl.get_axis(2)
+        r2 = ctrl.get_axis(5)
+        if l2 > 0.1:
+            scaled = int(CALIB_GRIP_STEP * ((l2 + 1.0) / 2.0) * 3) + 1
+            new_angle = int(np.clip(angles['GRIPPER'] + scaled,
+                                    LIMITS['GRIPPER']['min'], LIMITS['GRIPPER']['max']))
+            angles['GRIPPER'] = new_angle
+            ser.write(f"GRIPPER:{new_angle}\n".encode())
+            last_grip_time = now
+        elif r2 > 0.1:
+            scaled = int(CALIB_GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
+            new_angle = int(np.clip(angles['GRIPPER'] - scaled,
+                                    LIMITS['GRIPPER']['min'], LIMITS['GRIPPER']['max']))
+            angles['GRIPPER'] = new_angle
+            ser.write(f"GRIPPER:{new_angle}\n".encode())
+            last_grip_time = now
+
     print("\n" + "=" * 50)
     print("  FSR CALIBRATION MODE")
     print("=" * 50)
-    print("Step 1: Make sure gripper is OPEN (no object)")
-    print("Press Cross to record baseline...")
+    print("  L2 = close gripper   R2 = open gripper")
+    print("  Cross = record reading")
+    print("  Circle = skip object")
+    print("=" * 50)
+    print("\nStep 1: Open gripper fully (R2), then press Cross...")
 
-    # Wait for Cross press
+    # Wait for Cross — gripper controllable while waiting
     while True:
         pygame.event.pump()
+        handle_gripper()
         if ctrl.get_button(0):
             break
-        time.sleep(0.05)
-    time.sleep(0.1)  # debounce
+        time.sleep(0.04)
+    time.sleep(0.15)  # debounce
 
     fsr_l, fsr_r = read_fsr(ser)
     baseline_l, baseline_r = fsr_l, fsr_r
@@ -196,13 +227,29 @@ def calibrate_fsr(ser, ctrl):
         {"name": "Very Robust",  "expected_N": 10.0},
     ]
 
-    print("\nStep 2: Grip each object firmly and press Cross to record.")
-    print("        Press Circle to skip an object.\n")
+    print("\nStep 2: For each object — place it, use L2 to grip, press Cross to record.")
+    print("        Press Circle to skip.\n")
 
     for obj in objects_to_test:
-        print(f"  → Grip '{obj['name']}' object now, then press Cross...")
+        # Open gripper before each object
+        angles['GRIPPER'] = 0
+        ser.write(b"GRIPPER:0\n")
+        time.sleep(0.5)
+
+        print(f"  → Place '{obj['name']}' in gripper, use L2 to close, then Cross...")
+        last_fsr_print = 0
         while True:
             pygame.event.pump()
+            handle_gripper()
+
+            # Print live FSR every 0.4s so user can see sensor responding
+            now = time.time()
+            if now - last_fsr_print > 0.4:
+                fsr_l, fsr_r = read_fsr(ser)
+                print(f"    FSR live → Left:{fsr_l:4d}  Right:{fsr_r:4d}  "
+                      f"Gripper:{angles['GRIPPER']}°", end='\r')
+                last_fsr_print = now
+
             if ctrl.get_button(0):   # Cross = record
                 time.sleep(0.1)
                 fsr_l, fsr_r = read_fsr(ser)
@@ -221,7 +268,12 @@ def calibrate_fsr(ser, ctrl):
                 print(f"    Skipped.")
                 time.sleep(0.4)
                 break
-            time.sleep(0.05)
+            time.sleep(0.04)
+
+    # Open gripper after last object
+    angles['GRIPPER'] = 0
+    ser.write(b"GRIPPER:0\n")
+    time.sleep(0.3)
 
     # Compute linear scale factor from highest reading
     if calib["objects"]:
