@@ -24,16 +24,50 @@ import numpy as np                   # Math and array operations
 from stable_baselines3 import PPO    # Loads the trained RL model
 
 # ── Connection Settings ──────────────────────────────────────
-PORT       = '/dev/ttyUSB0'                    # Arduino USB port on Linux
-BAUD       = 9600                              # Must match Arduino Serial.begin(9600)
-MODEL_PATH = '/home/luq/fyp2/ppo_force_control.zip'  # Trained PPO model file
+PORT       = '/dev/ttyUSB0'
+BAUD       = 9600
+MODEL_PATH = '/home/luq/fyp2/ppo_force_control.zip'
 
 # ── Demo Mode Setting ────────────────────────────────────────
-# Used when FSR is not yet calibrated — bypasses RL force output
-# and grips at a fixed safe angle. Increase by 5° until it holds
-# the object without crushing. Set to False to use full RL mode.
-DEMO_MODE         = True
-DEMO_GRIPPER_ANGLE = 60   # degrees — start here, tune upward in steps of 5
+# Set True to use fixed angle (no FSR/RL). Set False for full AI grip.
+DEMO_MODE          = False
+DEMO_GRIPPER_ANGLE = 60
+
+# ── FSR Calibration Values ───────────────────────────────────
+# Loaded from fsr_calibration.txt at startup.
+# Fallback hardcoded values from your physical calibration session:
+#   baseline_l=0, baseline_r=166, scale=0.001047 N/unit
+FSR_BASELINE_L    =   0
+FSR_BASELINE_R    = 166
+FSR_SCALE         = 0.001047   # Newtons per raw ADC unit
+FSR_CALIB_PATH    = '/home/luq/fyp2/fsr_calibration.txt'
+
+def load_fsr_calibration():
+    """Load FSR calibration from file, fall back to hardcoded values."""
+    import json, os
+    global FSR_BASELINE_L, FSR_BASELINE_R, FSR_SCALE
+    if os.path.exists(FSR_CALIB_PATH):
+        try:
+            with open(FSR_CALIB_PATH) as f:
+                c = json.load(f)
+            FSR_BASELINE_L = c.get('baseline_l', FSR_BASELINE_L)
+            FSR_BASELINE_R = c.get('baseline_r', FSR_BASELINE_R)
+            FSR_SCALE      = c.get('scale_N_per_unit', FSR_SCALE)
+            print(f"FSR calibration loaded: "
+                  f"baseline L={FSR_BASELINE_L} R={FSR_BASELINE_R} "
+                  f"scale={FSR_SCALE:.6f} N/unit")
+        except Exception as e:
+            print(f"FSR calibration file error: {e} — using hardcoded values")
+    else:
+        print(f"FSR calibration file not found — using hardcoded values")
+    print(f"  Detection threshold: raw > 50 counts as contact")
+
+def raw_fsr_to_newton(fsr_l, fsr_r):
+    """Convert raw FSR ADC readings to estimated grip force in Newtons."""
+    baseline_avg = (FSR_BASELINE_L + FSR_BASELINE_R) / 2.0
+    avg_raw      = (fsr_l + fsr_r) / 2.0
+    net          = max(avg_raw - baseline_avg, 0.0)   # never negative
+    return net * FSR_SCALE
 
 # ── Joint Limits (Calibrated) ────────────────────────────────
 # Each joint has three values:
@@ -334,44 +368,52 @@ def run_rl_grip(ser, model, obj, ctrl):
             time.sleep(0.05)
         return
 
-    print(f"\nAI GRIP — {obj['name']} | {obj['damage']}N limit")
+    print(f"\nAI GRIP — {obj['name']} | damage limit {obj['damage']}N | "
+          f"required {obj['mass']*9.81*1.2:.2f}N")
     print("Press Circle to release\n")
     step       = 0
     prev_force = 0.0
-    req_force  = obj['mass'] * 9.81 * 1.2  # Required force = weight × safety factor
+    req_force  = obj['mass'] * 9.81 * 1.2
 
-    while step < 10:                         # Maximum 10 control steps
+    while step < 10:
         pygame.event.pump()
-        if ctrl.get_button(1):               # Circle button = cancel AI grip and release
+        if ctrl.get_button(1):
             print("Released by user")
             break
 
-        fsr_l, fsr_r = read_fsr(ser)         # Read current grip force from sensors
+        fsr_l, fsr_r  = read_fsr(ser)
+        actual_force  = raw_fsr_to_newton(fsr_l, fsr_r)  # real N from calibration
 
-        # Build observation array for RL model
         obs = np.array([
-            obj['mass'],        # Object weight
-            req_force,          # Target grip force needed
-            obj['fragility'],   # How fragile the object is
-            prev_force,         # What force was applied last step
-            step / 10.0         # Progress (0.0 to 1.0)
+            obj['mass'],
+            req_force,
+            obj['fragility'],
+            prev_force,
+            step / 10.0
         ], dtype=np.float32)
 
-        # Ask RL model to predict the best action (force value)
         action, _  = model.predict(obs, deterministic=True)
         force      = float(np.clip(action[0], 0.1, obj['damage'] * 0.9))
-        grip_angle = force_to_angle(force)   # Convert force to servo angle
-        send(ser, 'GRIPPER', grip_angle)     # Send to gripper
+        grip_angle = force_to_angle(force)
+        send(ser, 'GRIPPER', grip_angle)
 
-        print(f"Step {step+1} | FSR:{fsr_l},{fsr_r} | "
-              f"Force:{force:.2f}N | Angle:{grip_angle}")
+        print(f"Step {step+1:2d} | "
+              f"FSR raw:({fsr_l},{fsr_r}) | "
+              f"actual:{actual_force:.3f}N | "
+              f"model:{force:.2f}N | "
+              f"angle:{grip_angle}°")
 
-        prev_force = force
+        prev_force = actual_force   # feed real measured force back to model
         step += 1
 
-        # Stop early if grip is stable
-        if force >= req_force and step >= 3:
-            print("Stable grasp!")
+        # Stop early — grip is stable when actual force meets requirement
+        if actual_force >= req_force and step >= 3:
+            print(f"Stable grasp! {actual_force:.3f}N >= {req_force:.3f}N required")
+            break
+
+        # Safety stop — never exceed 90% of damage limit
+        if actual_force >= obj['damage'] * 0.9:
+            print(f"FORCE LIMIT REACHED — {actual_force:.3f}N, stopping")
             break
 
         time.sleep(0.05)
@@ -485,6 +527,9 @@ def main():
     print("=" * 50)
     print("    AdaptGrip — PS4 + RL Control")
     print("=" * 50)
+
+    # Load FSR calibration values from file (or use hardcoded fallback)
+    load_fsr_calibration()
 
     # ── Step 1: Load RL Model ───────────────────────────────
     # Try GPU first (faster), fall back to CPU if not available
