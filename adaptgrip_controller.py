@@ -31,7 +31,7 @@ MODEL_PATH = '/home/luq/fyp2/ppo_force_control.zip'
 # ── Demo Mode Setting ────────────────────────────────────────
 # Set True to use fixed angle (no FSR/RL). Set False for full AI grip.
 DEMO_MODE          = False
-DEMO_GRIPPER_ANGLE = 60
+DEMO_GRIPPER_ANGLE = 100  # 175=open, 0=closed — 100 gives a moderate grip
 
 # ── FSR Calibration Values ───────────────────────────────────
 # Loaded from fsr_calibration.txt at startup.
@@ -81,7 +81,7 @@ LIMITS = {
     'ELBOW':      {'rest':   0, 'min':  0, 'max': 110},  # CH2 — elbow joint
     'WRIST_P':    {'rest':  96, 'min':  0, 'max': 170},  # CH3 — wrist pitch (up/down)
     'WRIST_R':    {'rest':   0, 'min':  0, 'max': 175},  # CH4 — wrist roll (rotate)
-    'GRIPPER':    {'rest':   0, 'min':  0, 'max': 175},  # CH5 — gripper open/close
+    'GRIPPER':    {'rest': 175, 'min':  0, 'max': 175},  # CH5 — gripper (175=open, 0=closed)
 }
 
 # ── Stepper Motor Settings ───────────────────────────────────
@@ -162,8 +162,10 @@ def go_home(ser):
 # Lower force  = larger angle  (gripper opens more).
 # Force range: 0.1N (barely touching) to 100N (maximum grip)
 def force_to_angle(force_n):
-    min_a = LIMITS['GRIPPER']['min']   # 0°
-    max_a = LIMITS['GRIPPER']['max']   # 175°
+    # Servo is inverted: 175=open, 0=closed
+    # Higher force → lower angle (more closed)
+    min_a = LIMITS['GRIPPER']['min']   # 0°  = fully closed
+    max_a = LIMITS['GRIPPER']['max']   # 175° = fully open
     angle = max_a - ((force_n - 0.1) / (100.0 - 0.1)) * (max_a - min_a)
     return int(np.clip(angle, min_a, max_a))
 
@@ -728,13 +730,13 @@ def main():
             # Scale step by how hard the trigger is pressed for variable speed.
             # Rate-limited to once every 0.04s for faster response.
             if now - last_grip_time > 0.04:
-                if l2 > 0.1:    # L2 held = close gripper
+                if l2 > 0.1:    # L2 = close gripper (decrease angle, 0=closed)
                     scaled = int(GRIP_STEP * ((l2 + 1.0) / 2.0) * 3) + 1
-                    send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
-                    last_grip_time = now
-                elif r2 > 0.1:  # R2 held = open gripper
-                    scaled = int(GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
                     send(ser, 'GRIPPER', angles['GRIPPER'] - scaled)
+                    last_grip_time = now
+                elif r2 > 0.1:  # R2 = open gripper (increase angle, 175=open)
+                    scaled = int(GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
+                    send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
                     last_grip_time = now
 
         prev_buttons = curr    # Save current buttons for next loop comparison
