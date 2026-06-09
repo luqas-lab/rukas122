@@ -21,7 +21,11 @@ import numpy as np
 import json
 import os
 
-# ── Settings ─────────────────────────────────────────────────
+# ── Movement speed setting ───────────────────────────────────
+# Degrees per step during smooth waypoint transitions.
+# Lower = slower and gentler on motors. Raise if too slow.
+MOVE_STEP  = 2     # degrees per increment between waypoints
+MOVE_DELAY = 0.02  # seconds between each increment (20ms)
 PORT               = '/dev/ttyUSB0'
 BAUD               = 9600
 DEMO_GRIPPER_ANGLE = 60      # degrees — tune this for your object
@@ -77,17 +81,40 @@ def send_stepper(ser, cw):
         stepper_pos = new_pos
 
 
-def go_to_waypoint(ser, wp, delay=0.6):
-    """Move all joints smoothly to a saved waypoint position."""
+def go_to_waypoint(ser, wp, delay=0.3):
+    """
+    Move all joints smoothly to a saved waypoint by stepping in small
+    increments — prevents the snapping/breaking sound from instant jumps.
+    All joints move together each step so movement looks natural.
+    """
     print(f"  → Moving to: {wp['name']}")
     joints = ['SHOULDER_R', 'SHOULDER_L', 'ELBOW', 'WRIST_P', 'WRIST_R', 'GRIPPER']
-    for joint in joints:
-        if joint in wp:
-            send(ser, joint, wp[joint])
-            time.sleep(0.15)
-    # Move stepper to saved position
+
+    # Build targets for joints that exist in this waypoint
+    targets = {j: wp[j] for j in joints if j in wp}
+    if not targets:
+        return
+
+    # Step all joints simultaneously toward their targets
+    done = False
+    while not done:
+        done = True
+        for joint, target in targets.items():
+            current = angles[joint]
+            if current == target:
+                continue
+            done = False
+            if current < target:
+                new_angle = min(current + MOVE_STEP, target)
+            else:
+                new_angle = max(current - MOVE_STEP, target)
+            send(ser, joint, new_angle)
+        time.sleep(MOVE_DELAY)
+
+    # Move stepper to saved position after joints settle
     if 'STEPPER' in wp and wp['STEPPER'] != stepper_pos:
         send_stepper_abs(ser, wp['STEPPER'])
+
     time.sleep(delay)
 
 
@@ -139,54 +166,85 @@ def auto_pick_and_place(ser, wps):
     print("=" * 45)
 
     def wp(name, extra_delay=0.0):
+        """Move to a waypoint. Skips silently if not recorded."""
         if name in wps:
             go_to_waypoint(ser, wps[name])
             if extra_delay:
                 time.sleep(extra_delay)
         else:
-            print(f"  WARNING: waypoint '{name}' not found — skipping")
+            print(f"  (waypoint '{name}' not recorded — skipping)")
 
-    # 1. Move to approach position (above object, gripper open)
-    print("\n[1/8] Approach")
+    # 1. Home / start position
+    print("\n[ 1/15] Home")
+    wp('01_home')
+
+    # 2. Pre-approach — safe intermediate before swinging over object
+    print("[ 2/15] Pre-approach")
+    wp('02_pre_approach')
+
+    # 3. Open gripper then move directly above object
+    print("[ 3/15] Approach above object")
     send(ser, 'GRIPPER', 0)
-    time.sleep(0.3)
-    wp('1_approach')
+    time.sleep(0.5)
+    wp('03_approach')
 
-    # 2. Lower to pick position
-    print("[2/8] Lower to object")
-    wp('2_pick_down')
+    # 4. Slow entry — halfway down
+    print("[ 4/15] Lower mid")
+    wp('04_pick_mid')
 
-    # 3. Close gripper
-    print(f"[3/8] Grip at {DEMO_GRIPPER_ANGLE}°")
+    # 5. At object level
+    print("[ 5/15] At object")
+    wp('05_pick_down')
+
+    # 6. Close gripper
+    print(f"[ 6/15] Gripping at {DEMO_GRIPPER_ANGLE}°")
     send(ser, 'GRIPPER', DEMO_GRIPPER_ANGLE)
-    time.sleep(1.0)
+    time.sleep(1.2)
     fsr_l, fsr_r = read_fsr(ser)
-    print(f"      FSR → Left:{fsr_l}  Right:{fsr_r}")
-    # Update waypoint GRIPPER value so go_to_waypoint won't open it
-    if '3_gripping' in wps:
-        wps['3_gripping']['GRIPPER'] = DEMO_GRIPPER_ANGLE
-    wp('3_gripping', extra_delay=0.3)
+    print(f"        FSR → Left:{fsr_l}  Right:{fsr_r}")
+    if '06_gripping' in wps:
+        wps['06_gripping']['GRIPPER'] = DEMO_GRIPPER_ANGLE
+    wp('06_gripping', extra_delay=0.3)
 
-    # 4. Lift with object
-    print("[4/8] Lift")
-    wp('4_lifted')
+    # 7. Slow exit — halfway up with object
+    print("[ 7/15] Lifting mid")
+    wp('07_pick_up_mid')
 
-    # 5. Move to place approach (base rotates here)
-    print("[5/8] Rotate to place position")
-    wp('5_place_approach', extra_delay=0.3)
+    # 8. Fully lifted — safe to rotate
+    print("[ 8/15] Fully lifted")
+    wp('08_lifted')
 
-    # 6. Lower to place position
-    print("[6/8] Lower to place")
-    wp('6_place_down')
+    # 9. Optional mid-rotation waypoint
+    print("[ 9/15] Rotating to place")
+    wp('09_rotate_mid')
 
-    # 7. Release
-    print("[7/8] Release")
+    # 10. Above place location
+    print("[10/15] Place approach")
+    wp('10_place_approach', extra_delay=0.3)
+
+    # 11. Halfway down to place
+    print("[11/15] Place mid")
+    wp('11_place_mid')
+
+    # 12. At place level
+    print("[12/15] At place position")
+    wp('12_place_down')
+
+    # 13. Release object
+    print("[13/15] Releasing")
     send(ser, 'GRIPPER', 0)
     time.sleep(1.0)
+    if '13_released' in wps:
+        wps['13_released']['GRIPPER'] = 0
+    wp('13_released', extra_delay=0.3)
 
-    # 8. Lift and return home
-    print("[8/8] Return home")
-    wp('8_return_up', extra_delay=0.3)
+    # 14. Retract slightly before rotating back
+    print("[14/15] Retract after place")
+    wp('14_place_retract')
+
+    # 15. Raise and return home
+    print("[15/15] Return home")
+    wp('15_return_up', extra_delay=0.3)
     go_home(ser)
 
     print("\n" + "=" * 45)

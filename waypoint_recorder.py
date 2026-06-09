@@ -146,14 +146,21 @@ def write_waypoints_file():
 # Press OPTIONS repeatedly — each press saves the next name in this list.
 # Add more names if you need more waypoints.
 WAYPOINT_NAMES = [
-    "1_approach",       # above object, gripper open
-    "2_pick_down",      # lowered to object
-    "3_gripping",       # gripper closed on object
-    "4_lifted",         # raised with object
-    "5_place_approach", # above drop location (after base rotation)
-    "6_place_down",     # lowered to drop location
-    "7_released",       # gripper open at drop location
-    "8_return_up",      # raised after releasing
+    "01_home",               # starting rest position
+    "02_pre_approach",       # intermediate position before lowering — avoids sudden swing
+    "03_approach",           # directly above object, gripper fully open
+    "04_pick_mid",           # halfway down to object — slow entry
+    "05_pick_down",          # at object level, ready to grip
+    "06_gripping",           # gripper closed on object
+    "07_pick_up_mid",        # halfway back up after gripping — slow exit
+    "08_lifted",             # fully raised with object, safe to rotate
+    "09_rotate_mid",         # optional mid-point during base rotation (if needed)
+    "10_place_approach",     # above drop location after rotation
+    "11_place_mid",          # halfway down to drop location
+    "12_place_down",         # at drop level
+    "13_released",           # gripper open, object released
+    "14_place_retract",      # lift slightly before rotating back
+    "15_return_up",          # fully raised, ready to rotate back
 ]
 
 
