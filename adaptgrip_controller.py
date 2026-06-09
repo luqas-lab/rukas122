@@ -484,7 +484,7 @@ def main():
     DEAD_LEFT    = 0.35        # Deadzone for left stick (higher — noisier axis)
     STEP         = 3           # Degrees per loop for right stick joints
     SHOULDER_STEP = 4          # Degrees per loop for shoulders (heavier load, needs more)
-    GRIP_STEP    = 2           # Degrees per press for gripper open/close
+    GRIP_STEP    = 5           # Degrees per step — increased to match demo speed
 
     prev_buttons      = [0] * ctrl.get_numbuttons()
     last_stepper_time = 0
