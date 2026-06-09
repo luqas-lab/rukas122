@@ -161,12 +161,13 @@ def go_home(ser):
 # Higher force = smaller angle (gripper closes more).
 # Lower force  = larger angle  (gripper opens more).
 # Force range: 0.1N (barely touching) to 100N (maximum grip)
-def force_to_angle(force_n):
+def force_to_angle(force_n, max_force=10.0):
     # Servo is inverted: 175=open, 0=closed
-    # Higher force → lower angle (more closed)
+    # Scale force against object damage limit, not 100N
+    # e.g. Very Fragile damage=5N: 1.57N → 175-(1.47/4.9)*175 = 122° (proper grip)
     min_a = LIMITS['GRIPPER']['min']   # 0°  = fully closed
     max_a = LIMITS['GRIPPER']['max']   # 175° = fully open
-    angle = max_a - ((force_n - 0.1) / (100.0 - 0.1)) * (max_a - min_a)
+    angle = max_a - ((force_n - 0.1) / (max_force - 0.1)) * (max_a - min_a)
     return int(np.clip(angle, min_a, max_a))
 
 # ── read_fsr() ───────────────────────────────────────────────
@@ -396,7 +397,7 @@ def run_rl_grip(ser, model, obj, ctrl):
 
         action, _  = model.predict(obs, deterministic=True)
         force      = float(np.clip(action[0], 0.1, obj['damage'] * 0.9))
-        grip_angle = force_to_angle(force)
+        grip_angle = force_to_angle(force, max_force=obj['damage'])
         send(ser, 'GRIPPER', grip_angle)
 
         print(f"Step {step+1:2d} | "
@@ -405,7 +406,9 @@ def run_rl_grip(ser, model, obj, ctrl):
               f"model:{force:.2f}N | "
               f"angle:{grip_angle}°")
 
-        prev_force = actual_force   # feed real measured force back to model
+        # Use actual force when contact detected, model force otherwise
+        # This prevents prev_force staying 0 while gripper is still closing
+        prev_force = actual_force if actual_force > 0.01 else force
         step += 1
 
         # Stop early — grip is stable when actual force meets requirement
