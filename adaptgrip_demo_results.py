@@ -309,7 +309,7 @@ def plot_dashboard(results, calib):
     x = np.arange(len(results))
     ax1.bar(x, means, color=COLORS_OBJ, alpha=0.85, edgecolor='#444466', zorder=2)
     ax1.errorbar(x, means, yerr=stds, fmt='none', color='white', capsize=4, linewidth=1.5, zorder=3)
-    ax1.scatter(x, reqs, marker='--', color='#00d2ff', zorder=4, s=60, label='Required')
+    ax1.scatter(x, reqs, marker='_', color='#00d2ff', zorder=4, s=120, label='Required')
     ax1.scatter(x, dmgs, marker='^',  color='#e74c3c', zorder=4, s=60, label='Damage limit')
     ax1.set_xticks(x)
     ax1.set_xticklabels(['V.Frag','Frag','Med','Rob','V.Rob'], color='#aaa', fontsize=7)
