@@ -335,6 +335,10 @@ def plot_dashboard(results, calib):
     ax2.legend(fontsize=7, facecolor='#16213e', labelcolor='white', edgecolor='#444466')
     for i, v in enumerate(sr):
         ax2.text(i - w, v + 1, f'{v:.0f}', ha='center', color='white', fontsize=6)
+    for i, v in enumerate(dr):
+        ax2.text(i, v + 1, f'{v:.0f}', ha='center', color='white', fontsize=6)
+    for i, v in enumerate(rr):
+        ax2.text(i + w, v + 1, f'{v:.0f}', ha='center', color='white', fontsize=6)
 
     # 3. Representative force curve (median trial per object)
     ax3 = fig.add_subplot(gs[0, 2])
