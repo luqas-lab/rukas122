@@ -160,13 +160,12 @@ def go_home(ser):
 # Converts a grip force value (in Newtons) to a servo angle.
 # Higher force = smaller angle (gripper closes more).
 # Lower force  = larger angle  (gripper opens more).
-# Force range: 0.1N (barely touching) to 100N (maximum grip)
-def force_to_angle(force_n, max_force=10.0):
-    # Servo is inverted: 175=open, 0=closed
-    # Scale force against object damage limit, not 100N
-    # e.g. Very Fragile damage=5N: 1.57N → 175-(1.47/4.9)*175 = 122° (proper grip)
+# open_angle = the angle at which the gripper just makes contact
+#              with the object (0 force). Squeezing further from
+#              there increases force, down to fully closed (0°).
+def force_to_angle(force_n, max_force=10.0, open_angle=175):
     min_a = LIMITS['GRIPPER']['min']   # 0°  = fully closed
-    max_a = LIMITS['GRIPPER']['max']   # 175° = fully open
+    max_a = open_angle                 # angle of first contact = 0 force
     angle = max_a - ((force_n - 0.1) / (max_force - 0.1)) * (max_a - min_a)
     return int(np.clip(angle, min_a, max_a))
 
@@ -344,6 +343,106 @@ def calibrate_fsr(ser, ctrl):
     print("=" * 50)
     print("  Calibration done. Returning to normal mode.\n")
 
+# ── ForceGUI ─────────────────────────────────────────────────
+# Small pygame window that shows the live FSR force reading as a
+# gauge bar, with markers for the required grip force and the
+# object's damage limit. Used during AI grip so judges can see the
+# Newton readout in real time.
+class ForceGUI:
+    def __init__(self, width=480, height=240):
+        self.width  = width
+        self.height = height
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption("AdaptGrip — Live Force Feedback")
+        self.font_big   = pygame.font.SysFont("consolas", 34, bold=True)
+        self.font_med   = pygame.font.SysFont("consolas", 20, bold=True)
+        self.font_small = pygame.font.SysFont("consolas", 15)
+
+    def update(self, actual_force, required_force, damage_limit, status, obj_name=""):
+        pygame.event.pump()
+        screen = self.screen
+        screen.fill((26, 26, 46))
+
+        title = self.font_med.render(f"AdaptGrip — {obj_name}", True, (255, 255, 255))
+        screen.blit(title, (16, 10))
+
+        # Gauge bar
+        bar_x, bar_y, bar_w, bar_h = 20, 50, self.width - 40, 36
+        max_scale = max(damage_limit * 1.15, 1.0)
+        pygame.draw.rect(screen, (60, 60, 80), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
+
+        frac   = float(np.clip(actual_force / max_scale, 0.0, 1.0))
+        fill_w = int(bar_w * frac)
+        if actual_force >= damage_limit:
+            color = (231, 76, 60)     # red — over damage limit
+        elif actual_force >= required_force:
+            color = (46, 204, 113)    # green — holding object
+        else:
+            color = (52, 152, 219)    # blue — still ramping up
+        if fill_w > 0:
+            pygame.draw.rect(screen, color, (bar_x, bar_y, fill_w, bar_h), border_radius=6)
+
+        # Markers for required force and damage limit
+        req_x = bar_x + int(bar_w * np.clip(required_force / max_scale, 0, 1))
+        dmg_x = bar_x + int(bar_w * np.clip(damage_limit / max_scale, 0, 1))
+        pygame.draw.line(screen, (0, 210, 255), (req_x, bar_y - 6), (req_x, bar_y + bar_h + 6), 3)
+        pygame.draw.line(screen, (231, 76, 60), (dmg_x, bar_y - 6), (dmg_x, bar_y + bar_h + 6), 3)
+        pygame.draw.rect(screen, (200, 200, 220), (bar_x, bar_y, bar_w, bar_h), 2, border_radius=6)
+
+        # Numeric readout
+        force_txt = self.font_big.render(f"{actual_force:5.2f} N", True, (255, 255, 255))
+        screen.blit(force_txt, (16, bar_y + bar_h + 14))
+
+        info_txt = self.font_small.render(
+            f"Required: {required_force:.2f} N    Damage limit: {damage_limit:.2f} N",
+            True, (170, 170, 190))
+        screen.blit(info_txt, (16, bar_y + bar_h + 64))
+
+        status_txt = self.font_med.render(status, True, (241, 196, 15))
+        screen.blit(status_txt, (16, bar_y + bar_h + 92))
+
+        pygame.display.flip()
+
+
+# ── find_contact() ───────────────────────────────────────────
+# Closes the gripper gradually from fully open until the FSR
+# sensors detect the object (force >= CONTACT_FORCE_N).
+# Returns the angle at first contact — this becomes the "0 force"
+# reference point for force_to_angle(), so the RL squeeze range
+# adapts to the size of whatever object is in the gripper.
+CONTACT_FORCE_N  = 0.05   # Newtons — minimum force counted as "touching"
+CONTACT_STEP_DEG = 3      # degrees per contact-search step
+CONTACT_DELAY    = 0.08   # seconds between steps
+
+def find_contact(ser, ctrl, obj, req_force, gui=None):
+    angle = LIMITS['GRIPPER']['max']   # start fully open (175°)
+    send(ser, 'GRIPPER', angle)
+    time.sleep(0.3)
+    print("Searching for object contact...")
+
+    while angle > LIMITS['GRIPPER']['min']:
+        pygame.event.pump()
+        if ctrl.get_button(1):   # Circle = cancel
+            return None
+
+        fsr_l, fsr_r = read_fsr(ser)
+        force = raw_fsr_to_newton(fsr_l, fsr_r)
+        if gui:
+            gui.update(force, req_force, obj['damage'],
+                       "Searching for contact...", obj['name'])
+
+        if force >= CONTACT_FORCE_N:
+            print(f"Contact detected at angle {angle}° (force {force:.3f}N)")
+            return angle
+
+        angle = max(angle - CONTACT_STEP_DEG, LIMITS['GRIPPER']['min'])
+        send(ser, 'GRIPPER', angle)
+        time.sleep(CONTACT_DELAY)
+
+    print("Fully closed without detecting contact — object may be missing/too small")
+    return angle
+
+
 # ── run_rl_grip() ────────────────────────────────────────────
 # This is the AI grip function — runs when Cross button is pressed.
 # Uses the trained PPO reinforcement learning model to decide
@@ -353,7 +452,9 @@ def calibrate_fsr(ser, ctrl):
 #   [mass, required_force, fragility, previous_force, step_progress]
 # And outputs a force value (0.1N to damage_limit).
 # That force is converted to a servo angle and sent to the gripper.
-def run_rl_grip(ser, model, obj, ctrl):
+def run_rl_grip(ser, model, obj, ctrl, gui=None):
+    req_force = obj['mass'] * 9.81 * 1.2
+
     # DEMO_MODE: skip RL, use a fixed safe angle until FSR is calibrated
     if DEMO_MODE:
         print(f"\nDEMO GRIP — fixed angle {DEMO_GRIPPER_ANGLE}° "
@@ -368,15 +469,25 @@ def run_rl_grip(ser, model, obj, ctrl):
             if ctrl.get_button(1):   # Circle = release
                 print("Released")
                 break
+            if gui:
+                fsr_l, fsr_r = read_fsr(ser)
+                force = raw_fsr_to_newton(fsr_l, fsr_r)
+                gui.update(force, req_force, obj['damage'], "DEMO GRIP — holding", obj['name'])
             time.sleep(0.05)
         return
 
     print(f"\nAI GRIP — {obj['name']} | damage limit {obj['damage']}N | "
-          f"required {obj['mass']*9.81*1.2:.2f}N")
+          f"required {req_force:.2f}N")
+
+    # ── Phase 1: close gradually until the gripper touches the object ──
+    contact_angle = find_contact(ser, ctrl, obj, req_force, gui)
+    if contact_angle is None:
+        print("Released by user during contact search")
+        return
+
     print("Press Circle to release\n")
     step       = 0
     prev_force = 0.0
-    req_force  = obj['mass'] * 9.81 * 1.2
 
     while step < 10:
         pygame.event.pump()
@@ -397,7 +508,7 @@ def run_rl_grip(ser, model, obj, ctrl):
 
         action, _  = model.predict(obs, deterministic=True)
         force      = float(np.clip(action[0], 0.1, obj['damage'] * 0.9))
-        grip_angle = force_to_angle(force, max_force=obj['damage'])
+        grip_angle = force_to_angle(force, max_force=obj['damage'], open_angle=contact_angle)
         send(ser, 'GRIPPER', grip_angle)
 
         print(f"Step {step+1:2d} | "
@@ -405,6 +516,10 @@ def run_rl_grip(ser, model, obj, ctrl):
               f"actual:{actual_force:.3f}N | "
               f"model:{force:.2f}N | "
               f"angle:{grip_angle}°")
+
+        if gui:
+            gui.update(actual_force, req_force, obj['damage'],
+                       f"Gripping... step {step+1}/10", obj['name'])
 
         # Use actual force when contact detected, model force otherwise
         # This prevents prev_force staying 0 while gripper is still closing
@@ -414,11 +529,15 @@ def run_rl_grip(ser, model, obj, ctrl):
         # Stop early — grip is stable when actual force meets requirement
         if actual_force >= req_force and step >= 3:
             print(f"Stable grasp! {actual_force:.3f}N >= {req_force:.3f}N required")
+            if gui:
+                gui.update(actual_force, req_force, obj['damage'], "STABLE GRASP!", obj['name'])
             break
 
         # Safety stop — never exceed 90% of damage limit
         if actual_force >= obj['damage'] * 0.9:
             print(f"FORCE LIMIT REACHED — {actual_force:.3f}N, stopping")
+            if gui:
+                gui.update(actual_force, req_force, obj['damage'], "DAMAGE LIMIT!", obj['name'])
             break
 
         time.sleep(0.05)
@@ -571,6 +690,14 @@ def main():
     ctrl.init()
     print(f"PS4: {ctrl.get_name()}")
 
+    # ── Step 3b: Open Live Force Feedback GUI ───────────────
+    gui = None
+    try:
+        gui = ForceGUI()
+        print("Force feedback GUI opened.")
+    except Exception as e:
+        print(f"Could not open Force GUI: {e} — continuing without it")
+
     # ── Step 4: Start System ─────────────────────────────────
     # Sends START to Arduino → arm moves to home position
     print("\nSending START — arm moving to home...")
@@ -681,7 +808,7 @@ def main():
         if new[0] and not AI_MODE:
             if model is not None:
                 AI_MODE = True
-                run_rl_grip(ser, model, selected_obj, ctrl)
+                run_rl_grip(ser, model, selected_obj, ctrl, gui)
                 AI_MODE = False
             else:
                 print("No RL model — AI grip unavailable")
