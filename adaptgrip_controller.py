@@ -311,11 +311,15 @@ def calibrate_fsr(ser, ctrl):
     ser.write(b"GRIPPER:0\n")
     time.sleep(0.3)
 
-    # Compute linear scale factor from highest reading
+    # Compute linear scale factor using ALL recorded points (least-squares
+    # fit through the origin) instead of just the single highest reading.
+    # expected_N for each test object matches that object's required grip
+    # force (mass * 9.81 * 1.2) in OBJECTS — so this scale is calibrated
+    # across the same force range the RL grip loop operates in.
     if calib["objects"]:
-        max_entry = max(calib["objects"], key=lambda x: x["raw_avg"])
-        fsr_range = max(max_entry["raw_avg"] - baseline_l, 1)
-        scale_N_per_unit = max_entry["expected_N"] / fsr_range
+        sum_xy = sum((o["raw_avg"] - baseline_l) * o["expected_N"] for o in calib["objects"])
+        sum_xx = sum((o["raw_avg"] - baseline_l) ** 2          for o in calib["objects"])
+        scale_N_per_unit = sum_xy / max(sum_xx, 1)
 
         print("\n" + "=" * 50)
         print("  CALIBRATION RESULTS")
@@ -403,40 +407,6 @@ class ForceGUI:
 
         pygame.display.flip()
 
-    def show_live(self, force, fsr_l, fsr_r, max_scale=10.0):
-        """Simple live readout for manual squeezing — just the current
-        force, a plain bar, and raw FSR values. Used when AI grip is
-        not active, so judges can see the sensor responding in real time."""
-        pygame.event.pump()
-        screen = self.screen
-        screen.fill((26, 26, 46))
-
-        title = self.font_med.render("AdaptGrip — Live Force Sensor", True, (255, 255, 255))
-        screen.blit(title, (16, 10))
-
-        bar_x, bar_y, bar_w, bar_h = 20, 50, self.width - 40, 36
-        pygame.draw.rect(screen, (60, 60, 80), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
-
-        frac   = float(np.clip(force / max_scale, 0.0, 1.0))
-        fill_w = int(bar_w * frac)
-        if fill_w > 0:
-            pygame.draw.rect(screen, (52, 152, 219), (bar_x, bar_y, fill_w, bar_h), border_radius=6)
-        pygame.draw.rect(screen, (200, 200, 220), (bar_x, bar_y, bar_w, bar_h), 2, border_radius=6)
-
-        force_txt = self.font_big.render(f"{force:5.2f} N", True, (255, 255, 255))
-        screen.blit(force_txt, (16, bar_y + bar_h + 14))
-
-        raw_txt = self.font_small.render(
-            f"FSR raw → Left:{fsr_l}  Right:{fsr_r}",
-            True, (170, 170, 190))
-        screen.blit(raw_txt, (16, bar_y + bar_h + 64))
-
-        hint_txt = self.font_small.render(
-            "Squeeze with L2 / press Cross for AI grip", True, (120, 120, 140))
-        screen.blit(hint_txt, (16, bar_y + bar_h + 92))
-
-        pygame.display.flip()
-
 
 # ── find_contact() ───────────────────────────────────────────
 # Closes the gripper gradually from fully open until the FSR
@@ -456,6 +426,9 @@ def find_contact(ser, ctrl, obj, req_force, gui=None):
 
     while angle > LIMITS['GRIPPER']['min']:
         pygame.event.pump()
+        if ctrl.get_button(3):   # Square = emergency stop
+            ser.write(b"STOP\n")
+            return "ESTOP"
         if ctrl.get_button(1):   # Circle = cancel
             return None
 
@@ -515,6 +488,8 @@ def run_rl_grip(ser, model, obj, ctrl, gui=None):
 
     # ── Phase 1: close gradually until the gripper touches the object ──
     contact_angle = find_contact(ser, ctrl, obj, req_force, gui)
+    if contact_angle == "ESTOP":
+        return "ESTOP"
     if contact_angle is None:
         print("Released by user during contact search")
         return
@@ -525,6 +500,9 @@ def run_rl_grip(ser, model, obj, ctrl, gui=None):
 
     while step < 10:
         pygame.event.pump()
+        if ctrl.get_button(3):   # Square = emergency stop
+            ser.write(b"STOP\n")
+            return "ESTOP"
         if ctrl.get_button(1):
             print("Released by user")
             break
@@ -752,7 +730,6 @@ def main():
     prev_buttons      = [0] * ctrl.get_numbuttons()
     last_stepper_time = 0
     last_grip_time    = 0
-    last_fsr_time     = 0
 
     print("=" * 50)
     print("CONTROLS:")
@@ -843,8 +820,12 @@ def main():
         if new[0] and not AI_MODE:
             if model is not None:
                 AI_MODE = True
-                run_rl_grip(ser, model, selected_obj, ctrl, gui)
+                result = run_rl_grip(ser, model, selected_obj, ctrl, gui)
                 AI_MODE = False
+                if result == "ESTOP":
+                    print("EMERGENCY STOP!")
+                    running = False
+                    break
             else:
                 print("No RL model — AI grip unavailable")
 
@@ -903,14 +884,6 @@ def main():
                     scaled = int(GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
                     send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
                     last_grip_time = now
-
-            # Live force readout on GUI while not doing AI grip —
-            # lets you show the sensor responding by squeezing with L2/R2.
-            if gui and (now - last_fsr_time > 0.2):
-                fsr_l, fsr_r = read_fsr(ser)
-                live_force = raw_fsr_to_newton(fsr_l, fsr_r)
-                gui.show_live(live_force, fsr_l, fsr_r)
-                last_fsr_time = now
 
         prev_buttons = curr    # Save current buttons for next loop comparison
         time.sleep(0.05)       # 50ms loop delay = ~20 updates per second
