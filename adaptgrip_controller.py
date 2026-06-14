@@ -17,8 +17,13 @@
 #  When the user presses Cross (X), the AI takes over the gripper.
 
 # ── Imports ─────────────────────────────────────────────────
+import os                            # Environment variables (SDL hints)
 import serial                        # USB communication with Arduino
 import time                          # For delays and timing
+
+# Keep delivering joystick events even when the Force GUI window has focus
+os.environ.setdefault('SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', '1')
+
 import pygame                        # Reads PS4 controller input
 import numpy as np                   # Math and array operations
 from stable_baselines3 import PPO    # Loads the trained RL model
@@ -702,13 +707,9 @@ def main():
     ctrl.init()
     print(f"PS4: {ctrl.get_name()}")
 
-    # ── Step 3b: Open Live Force Feedback GUI ───────────────
+    # ── Step 3b: Live Force Feedback GUI ────────────────────
+    # Opened lazily only when a Fragile/Very Fragile object is selected
     gui = None
-    try:
-        gui = ForceGUI()
-        print("Force feedback GUI opened.")
-    except Exception as e:
-        print(f"Could not open Force GUI: {e} — continuing without it")
 
     # ── Step 4: Start System ─────────────────────────────────
     # Sends START to Arduino → arm moves to home position
@@ -795,9 +796,21 @@ def main():
         if new[11]:
             selected_obj = OBJECTS[1]
             print(f"Object: {selected_obj['name']}")
+            if gui is None:
+                try:
+                    gui = ForceGUI()
+                    print("Force feedback GUI opened.")
+                except Exception as e:
+                    print(f"Could not open Force GUI: {e} — continuing without it")
         if new[12]:
             selected_obj = OBJECTS[2]
             print(f"Object: {selected_obj['name']}")
+            if gui is None:
+                try:
+                    gui = ForceGUI()
+                    print("Force feedback GUI opened.")
+                except Exception as e:
+                    print(f"Could not open Force GUI: {e} — continuing without it")
 
         # Square = Emergency Stop — turns off everything immediately
         if new[3]:
