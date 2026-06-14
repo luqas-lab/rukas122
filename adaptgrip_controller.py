@@ -303,6 +303,8 @@ def calibrate_fsr(ser, ctrl):
                     "raw_avg":    avg,
                 })
                 print(f"    Recorded → Left:{fsr_l}  Right:{fsr_r}  Avg:{avg}")
+                angles['GRIPPER'] = 175
+                ser.write(b"GRIPPER:175\n")
                 time.sleep(0.4)
                 break
             if ctrl.get_button(1):   # Circle = skip
