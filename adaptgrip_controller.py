@@ -76,8 +76,8 @@ def raw_fsr_to_newton(fsr_l, fsr_r):
 #   max  = maximum safe angle (never go above this)
 # These values were found by physical calibration of the real arm.
 LIMITS = {
-    'SHOULDER_R': {'rest':   0, 'min':  0, 'max': 180},  # CH0 — right shoulder
-    'SHOULDER_L': {'rest': 180, 'min': 50, 'max': 190},  # CH1 — left shoulder (inverted, max>180 allows downward movement)
+    'SHOULDER_R': {'rest':   0, 'min':  0, 'max':  90},  # CH0 — right shoulder (capped at 90 — past this it jerks/stalls)
+    'SHOULDER_L': {'rest': 180, 'min': 90, 'max': 190},  # CH1 — left shoulder (inverted, capped to match SHOULDER_R)
     'ELBOW':      {'rest':   0, 'min':  0, 'max': 110},  # CH2 — elbow joint
     'WRIST_P':    {'rest':  96, 'min':  0, 'max': 170},  # CH3 — wrist pitch (up/down)
     'WRIST_R':    {'rest':   0, 'min':  0, 'max': 175},  # CH4 — wrist roll (rotate)
