@@ -403,6 +403,40 @@ class ForceGUI:
 
         pygame.display.flip()
 
+    def show_live(self, force, fsr_l, fsr_r, max_scale=10.0):
+        """Simple live readout for manual squeezing — just the current
+        force, a plain bar, and raw FSR values. Used when AI grip is
+        not active, so judges can see the sensor responding in real time."""
+        pygame.event.pump()
+        screen = self.screen
+        screen.fill((26, 26, 46))
+
+        title = self.font_med.render("AdaptGrip — Live Force Sensor", True, (255, 255, 255))
+        screen.blit(title, (16, 10))
+
+        bar_x, bar_y, bar_w, bar_h = 20, 50, self.width - 40, 36
+        pygame.draw.rect(screen, (60, 60, 80), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
+
+        frac   = float(np.clip(force / max_scale, 0.0, 1.0))
+        fill_w = int(bar_w * frac)
+        if fill_w > 0:
+            pygame.draw.rect(screen, (52, 152, 219), (bar_x, bar_y, fill_w, bar_h), border_radius=6)
+        pygame.draw.rect(screen, (200, 200, 220), (bar_x, bar_y, bar_w, bar_h), 2, border_radius=6)
+
+        force_txt = self.font_big.render(f"{force:5.2f} N", True, (255, 255, 255))
+        screen.blit(force_txt, (16, bar_y + bar_h + 14))
+
+        raw_txt = self.font_small.render(
+            f"FSR raw → Left:{fsr_l}  Right:{fsr_r}",
+            True, (170, 170, 190))
+        screen.blit(raw_txt, (16, bar_y + bar_h + 64))
+
+        hint_txt = self.font_small.render(
+            "Squeeze with L2 / press Cross for AI grip", True, (120, 120, 140))
+        screen.blit(hint_txt, (16, bar_y + bar_h + 92))
+
+        pygame.display.flip()
+
 
 # ── find_contact() ───────────────────────────────────────────
 # Closes the gripper gradually from fully open until the FSR
@@ -718,6 +752,7 @@ def main():
     prev_buttons      = [0] * ctrl.get_numbuttons()
     last_stepper_time = 0
     last_grip_time    = 0
+    last_fsr_time     = 0
 
     print("=" * 50)
     print("CONTROLS:")
@@ -868,6 +903,14 @@ def main():
                     scaled = int(GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
                     send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
                     last_grip_time = now
+
+            # Live force readout on GUI while not doing AI grip —
+            # lets you show the sensor responding by squeezing with L2/R2.
+            if gui and (now - last_fsr_time > 0.2):
+                fsr_l, fsr_r = read_fsr(ser)
+                live_force = raw_fsr_to_newton(fsr_l, fsr_r)
+                gui.show_live(live_force, fsr_l, fsr_r)
+                last_fsr_time = now
 
         prev_buttons = curr    # Save current buttons for next loop comparison
         time.sleep(0.05)       # 50ms loop delay = ~20 updates per second
