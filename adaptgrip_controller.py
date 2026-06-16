@@ -662,6 +662,27 @@ def auto_pick_and_place(ser):
 #   1. Load RL model (GPU first, CPU fallback)
 #   2. Connect to Arduino via USB serial
 #   3. Connect to PS4 controller via pygame
+# ── CSV Trial Logger ─────────────────────────────────────────
+import csv, datetime
+
+def create_results_csv():
+    fname = f"adaptgrip_results_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    with open(fname, 'w', newline='') as f:
+        csv.writer(f).writerow(
+            ['trial', 'category', 'object_name', 'required_force_N',
+             'damage_limit_N', 'actual_force_N', 'outcome', 'timestamp'])
+    print(f"Results will be saved to: {fname}")
+    return fname
+
+def log_trial(fname, trial, obj, actual_force, outcome):
+    req = round(obj['mass'] * 9.81 * 1.2, 3)
+    with open(fname, 'a', newline='') as f:
+        csv.writer(f).writerow([
+            trial, obj['fragility'], obj['name'],
+            req, obj['damage'], round(actual_force, 3),
+            outcome, datetime.datetime.now().strftime('%H:%M:%S')])
+    print(f"  [LOG] Trial {trial} | {obj['name']} | {outcome} | force {actual_force:.3f}N → saved")
+
 #   4. Send START to Arduino (arm moves to home)
 #   5. Enter main control loop — read PS4 inputs and send joint commands
 def main():
@@ -724,6 +745,9 @@ def main():
     # ── Control Settings ─────────────────────────────────────
     AI_MODE      = False       # True when RL model is controlling gripper
     selected_obj = OBJECTS[3]  # Default object = Medium
+    trial_num    = 0           # Auto-increments after each logged trial
+    last_grip_force = 0.0     # Actual force from last AI grip, used for logging
+    csv_file     = create_results_csv()
     DEAD         = 0.25        # Deadzone for right stick (smaller, offset-corrected)
     DEAD_LEFT    = 0.35        # Deadzone for left stick (higher — noisier axis)
     STEP         = 3           # Degrees per loop for right stick joints
@@ -752,6 +776,9 @@ def main():
     print("  L3 (Btn 11)      → Select Very Fragile")
     print("  R3 (Btn 12)      → Select Fragile")
     print("  L3 + R3 together → FSR Calibration mode")
+    print("  D-pad Left/Right → Cycle object category")
+    print("  D-pad Up         → Log last grip as SUCCESS")
+    print("  D-pad Down       → Log last grip as FAIL")
     print("=" * 50)
     print(f"Object: {selected_obj['name']}\n")
 
@@ -841,6 +868,10 @@ def main():
                     print("EMERGENCY STOP!")
                     running = False
                     break
+                # Store last measured force for logging
+                fsr_l, fsr_r = read_fsr(ser)
+                last_grip_force = raw_fsr_to_newton(fsr_l, fsr_r)
+                print("  → D-pad Up = SUCCESS  |  D-pad Down = FAIL")
             else:
                 print("No RL model — AI grip unavailable")
 
@@ -849,6 +880,34 @@ def main():
             AI_MODE = False
             send(ser, 'GRIPPER', LIMITS['GRIPPER']['rest'])
             print("Gripper open")
+
+        # D-pad Left/Right = Cycle object category
+        cat_keys = sorted(OBJECTS.keys())   # [1,2,3,4,5]
+        cur_idx  = cat_keys.index(next(k for k,v in OBJECTS.items() if v is selected_obj))
+        new_idx  = None
+        if new[15]:   # D-pad Left = previous category
+            new_idx = max(0, cur_idx - 1)
+        if new[16]:   # D-pad Right = next category
+            new_idx = min(len(cat_keys) - 1, cur_idx + 1)
+        if new_idx is not None and new_idx != cur_idx:
+            selected_obj = OBJECTS[cat_keys[new_idx]]
+            print(f"Category: {selected_obj['name']}")
+            if cat_keys[new_idx] <= 2 and gui is None:
+                try:
+                    gui = ForceGUI()
+                    print("Force feedback GUI opened.")
+                except Exception as e:
+                    print(f"Could not open Force GUI: {e}")
+
+        # D-pad Up = log last grip as SUCCESS
+        if new[13]:
+            trial_num += 1
+            log_trial(csv_file, trial_num, selected_obj, last_grip_force, "SUCCESS")
+
+        # D-pad Down = log last grip as FAIL
+        if new[14]:
+            trial_num += 1
+            log_trial(csv_file, trial_num, selected_obj, last_grip_force, "FAIL")
 
         # Manual joint control (only when AI is NOT active)
         if not AI_MODE:
