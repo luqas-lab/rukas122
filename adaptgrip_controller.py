@@ -103,11 +103,11 @@ stepper_pos = 0
 # damage   = maximum force in Newtons before object is damaged
 # fragility = 0.0 (robust) to 1.0 (very fragile), used by RL model
 OBJECTS = {
-    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05},
-    2: {"name": "Fragile",      "mass": 0.1,  "damage": 10.0, "fragility": 0.10},
-    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20},
-    4: {"name": "Robust",       "mass": 0.4,  "damage": 40.0, "fragility": 0.40},
-    5: {"name": "Very Robust",  "mass": 0.8,  "damage": 80.0, "fragility": 0.80},
+    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05, "squeeze":  0},
+    2: {"name": "Fragile",      "mass": 0.1,  "damage": 10.0, "fragility": 0.10, "squeeze":  3},
+    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20, "squeeze": 10},
+    4: {"name": "Robust",       "mass": 0.4,  "damage": 40.0, "fragility": 0.40, "squeeze": 20},
+    5: {"name": "Very Robust",  "mass": 0.8,  "damage": 80.0, "fragility": 0.80, "squeeze": 35},
 }
 
 # Stores the current angle of each joint (starts at rest position)
@@ -422,8 +422,8 @@ class ForceGUI:
 # reference point for force_to_angle(), so the RL squeeze range
 # adapts to the size of whatever object is in the gripper.
 CONTACT_FORCE_N  = 0.05   # Newtons — minimum force counted as "touching"
-CONTACT_STEP_DEG = 3      # degrees per contact-search step
-CONTACT_DELAY    = 0.08   # seconds between steps
+CONTACT_STEP_DEG = 1      # degrees per contact-search step (small = precise, avoids overshoot)
+CONTACT_DELAY    = 0.15   # seconds between steps (longer = FSR has time to react)
 
 def find_contact(ser, ctrl, obj, req_force, gui=None):
     angle = LIMITS['GRIPPER']['max']   # start fully open (175°)
@@ -500,6 +500,19 @@ def run_rl_grip(ser, model, obj, ctrl, gui=None):
     if contact_angle is None:
         print("Released by user during contact search")
         return
+    if contact_angle <= LIMITS['GRIPPER']['min']:
+        # No contact detected — object may be too large for gripper
+        print("No contact found — object may be too large. Holding at safe angle.")
+        safe = obj['squeeze']
+        send(ser, 'GRIPPER', safe)
+        while True:
+            pygame.event.pump()
+            if ctrl.get_button(3):
+                ser.write(b"STOP\n")
+                return "ESTOP"
+            if ctrl.get_button(1):
+                break
+        return
 
     print("Press Circle to release\n")
     step       = 0
@@ -528,6 +541,9 @@ def run_rl_grip(ser, model, obj, ctrl, gui=None):
         action, _  = model.predict(obs, deterministic=True)
         force      = float(np.clip(action[0], 0.1, obj['damage'] * 0.9))
         grip_angle = force_to_angle(force, max_force=obj['damage'], open_angle=contact_angle)
+        # Never close more than squeeze° from contact — prevents crushing
+        min_grip = max(contact_angle - obj['squeeze'], LIMITS['GRIPPER']['min'])
+        grip_angle = max(grip_angle, min_grip)
         send(ser, 'GRIPPER', grip_angle)
 
         print(f"Step {step+1:2d} | "
