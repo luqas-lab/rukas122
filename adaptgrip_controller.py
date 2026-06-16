@@ -755,6 +755,7 @@ def main():
     GRIP_STEP    = 5           # Degrees per step — increased to match demo speed
 
     prev_buttons      = [0] * ctrl.get_numbuttons()
+    prev_hat          = (0, 0)   # D-pad hat state (x, y)
     last_stepper_time = 0
     last_grip_time    = 0
 
@@ -808,7 +809,9 @@ def main():
         r2 = ctrl.get_axis(5)
 
         # Read all buttons (1=pressed, 0=not pressed)
-        curr = [ctrl.get_button(i) for i in range(ctrl.get_numbuttons())]
+        curr     = [ctrl.get_button(i) for i in range(ctrl.get_numbuttons())]
+        hat      = ctrl.get_hat(0) if ctrl.get_numhats() > 0 else (0, 0)
+        new_hat  = (hat[0] != prev_hat[0] or hat[1] != prev_hat[1])
 
         # Detect NEW button presses (just pressed this loop, not held)
         new  = [curr[i] and not prev_buttons[i] for i in range(len(curr))]
@@ -881,33 +884,42 @@ def main():
             send(ser, 'GRIPPER', LIMITS['GRIPPER']['rest'])
             print("Gripper open")
 
-        # D-pad Left/Right = Cycle object category
-        cat_keys = sorted(OBJECTS.keys())   # [1,2,3,4,5]
-        cur_idx  = cat_keys.index(next(k for k,v in OBJECTS.items() if v is selected_obj))
-        new_idx  = None
-        if new[15]:   # D-pad Left = previous category
-            new_idx = max(0, cur_idx - 1)
-        if new[16]:   # D-pad Right = next category
-            new_idx = min(len(cat_keys) - 1, cur_idx + 1)
-        if new_idx is not None and new_idx != cur_idx:
-            selected_obj = OBJECTS[cat_keys[new_idx]]
-            print(f"Category: {selected_obj['name']}")
-            if cat_keys[new_idx] <= 2 and gui is None:
-                try:
-                    gui = ForceGUI()
-                    print("Force feedback GUI opened.")
-                except Exception as e:
-                    print(f"Could not open Force GUI: {e}")
+        # D-pad (hat) controls
+        if new_hat:
+            cat_keys = sorted(OBJECTS.keys())   # [1,2,3,4,5]
+            cur_idx  = cat_keys.index(next(k for k,v in OBJECTS.items() if v is selected_obj))
 
-        # D-pad Up = log last grip as SUCCESS
-        if new[13]:
-            trial_num += 1
-            log_trial(csv_file, trial_num, selected_obj, last_grip_force, "SUCCESS")
+            if hat[0] == -1:   # D-pad Left = previous category
+                new_idx = max(0, cur_idx - 1)
+                selected_obj = OBJECTS[cat_keys[new_idx]]
+                print(f"Category: {selected_obj['name']}")
+                if cat_keys[new_idx] <= 2 and gui is None:
+                    try:
+                        gui = ForceGUI()
+                        print("Force feedback GUI opened.")
+                    except Exception as e:
+                        print(f"Could not open Force GUI: {e}")
 
-        # D-pad Down = log last grip as FAIL
-        if new[14]:
-            trial_num += 1
-            log_trial(csv_file, trial_num, selected_obj, last_grip_force, "FAIL")
+            elif hat[0] == 1:  # D-pad Right = next category
+                new_idx = min(len(cat_keys) - 1, cur_idx + 1)
+                selected_obj = OBJECTS[cat_keys[new_idx]]
+                print(f"Category: {selected_obj['name']}")
+                if cat_keys[new_idx] <= 2 and gui is None:
+                    try:
+                        gui = ForceGUI()
+                        print("Force feedback GUI opened.")
+                    except Exception as e:
+                        print(f"Could not open Force GUI: {e}")
+
+            elif hat[1] == 1:  # D-pad Up = log SUCCESS
+                trial_num += 1
+                log_trial(csv_file, trial_num, selected_obj, last_grip_force, "SUCCESS")
+
+            elif hat[1] == -1: # D-pad Down = log FAIL
+                trial_num += 1
+                log_trial(csv_file, trial_num, selected_obj, last_grip_force, "FAIL")
+
+            prev_hat = hat
 
         # Manual joint control (only when AI is NOT active)
         if not AI_MODE:
@@ -959,7 +971,9 @@ def main():
                     send(ser, 'GRIPPER', angles['GRIPPER'] + scaled)
                     last_grip_time = now
 
-        prev_buttons = curr    # Save current buttons for next loop comparison
+        prev_buttons = curr
+        if not new_hat:
+            prev_hat = hat
         time.sleep(0.05)       # 50ms loop delay = ~20 updates per second
 
     # ── Cleanup ──────────────────────────────────────────────
