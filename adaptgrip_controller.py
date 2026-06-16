@@ -220,16 +220,16 @@ def calibrate_fsr(ser, ctrl):
             return
         l2 = ctrl.get_axis(2)
         r2 = ctrl.get_axis(5)
-        if l2 > 0.1:
+        if l2 > 0.1:   # L2 = close gripper (decrease angle, 0=closed)
             scaled = int(CALIB_GRIP_STEP * ((l2 + 1.0) / 2.0) * 3) + 1
-            new_angle = int(np.clip(angles['GRIPPER'] + scaled,
+            new_angle = int(np.clip(angles['GRIPPER'] - scaled,
                                     LIMITS['GRIPPER']['min'], LIMITS['GRIPPER']['max']))
             angles['GRIPPER'] = new_angle
             ser.write(f"GRIPPER:{new_angle}\n".encode())
             last_grip_time = now
-        elif r2 > 0.1:
+        elif r2 > 0.1:  # R2 = open gripper (increase angle, 175=open)
             scaled = int(CALIB_GRIP_STEP * ((r2 + 1.0) / 2.0) * 3) + 1
-            new_angle = int(np.clip(angles['GRIPPER'] - scaled,
+            new_angle = int(np.clip(angles['GRIPPER'] + scaled,
                                     LIMITS['GRIPPER']['min'], LIMITS['GRIPPER']['max']))
             angles['GRIPPER'] = new_angle
             ser.write(f"GRIPPER:{new_angle}\n".encode())
@@ -273,8 +273,8 @@ def calibrate_fsr(ser, ctrl):
 
     for obj in objects_to_test:
         # Open gripper before each object
-        angles['GRIPPER'] = 0
-        ser.write(b"GRIPPER:0\n")
+        angles['GRIPPER'] = 175
+        ser.write(b"GRIPPER:175\n")
         time.sleep(0.5)
 
         print(f"  → Place '{obj['name']}' in gripper, use L2 to close, then Cross...")
@@ -314,8 +314,8 @@ def calibrate_fsr(ser, ctrl):
             time.sleep(0.04)
 
     # Open gripper after last object
-    angles['GRIPPER'] = 0
-    ser.write(b"GRIPPER:0\n")
+    angles['GRIPPER'] = 175
+    ser.write(b"GRIPPER:175\n")
     time.sleep(0.3)
 
     # Compute linear scale factor using ALL recorded points (least-squares
