@@ -103,10 +103,10 @@ stepper_pos = 0
 # damage   = maximum force in Newtons before object is damaged
 # fragility = 0.0 (robust) to 1.0 (very fragile), used by RL model
 OBJECTS = {
-    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05, "squeeze":  0},
-    2: {"name": "Fragile",      "mass": 0.1,  "damage": 10.0, "fragility": 0.10, "squeeze":  3},
-    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20, "squeeze": 10},
-    4: {"name": "Robust",       "mass": 0.4,  "damage": 40.0, "fragility": 0.40, "squeeze": 20},
+    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05, "squeeze":  5},
+    2: {"name": "Fragile",      "mass": 0.1,  "damage": 10.0, "fragility": 0.10, "squeeze":  8},
+    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20, "squeeze": 12},
+    4: {"name": "Robust",       "mass": 0.4,  "damage": 40.0, "fragility": 0.40, "squeeze": 22},
     5: {"name": "Very Robust",  "mass": 0.8,  "damage": 80.0, "fragility": 0.80, "squeeze": 35},
 }
 
