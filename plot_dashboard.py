@@ -50,8 +50,7 @@ x = np.arange(5)
 
 fig = plt.figure(figsize=(14, 8))
 fig.patch.set_facecolor('#1a1a2e')
-fig.suptitle('AdaptGrip — Real-World Grasp Test Results\n'
-             'Muhammad Luqmanul Hakeem bin Ramli',
+fig.suptitle('AdaptGrip — Real-World Grasp Test Results',
              color='white', fontsize=13, fontweight='bold')
 
 # ── Panel 1: Success rate per category ──────────────────────
