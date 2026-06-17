@@ -421,7 +421,7 @@ class ForceGUI:
 # Returns the angle at first contact — this becomes the "0 force"
 # reference point for force_to_angle(), so the RL squeeze range
 # adapts to the size of whatever object is in the gripper.
-CONTACT_FORCE_N  = 0.05   # Newtons — minimum force counted as "touching"
+CONTACT_RAW_THRESHOLD = 50  # raw ADC units above baseline — robust to scale-factor noise
 CONTACT_STEP_DEG = 1      # degrees per contact-search step (small = precise, avoids overshoot)
 CONTACT_DELAY    = 0.15   # seconds between steps (longer = FSR has time to react)
 
@@ -441,12 +441,15 @@ def find_contact(ser, ctrl, obj, req_force, gui=None):
 
         fsr_l, fsr_r = read_fsr(ser)
         force = raw_fsr_to_newton(fsr_l, fsr_r)
+        baseline_avg = (FSR_BASELINE_L + FSR_BASELINE_R) / 2.0
+        raw_avg      = (fsr_l + fsr_r) / 2.0
+        raw_net      = raw_avg - baseline_avg
         if gui:
             gui.update(force, req_force, obj['damage'],
                        "Searching for contact...", obj['name'])
 
-        if force >= CONTACT_FORCE_N:
-            print(f"Contact detected at angle {angle}° (force {force:.3f}N)")
+        if raw_net >= CONTACT_RAW_THRESHOLD:
+            print(f"Contact detected at angle {angle}° (raw_net {raw_net:.0f}, force {force:.3f}N)")
             return angle
 
         angle = max(angle - CONTACT_STEP_DEG, LIMITS['GRIPPER']['min'])
