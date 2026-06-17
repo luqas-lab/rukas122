@@ -103,9 +103,9 @@ stepper_pos = 0
 # damage   = maximum force in Newtons before object is damaged
 # fragility = 0.0 (robust) to 1.0 (very fragile), used by RL model
 OBJECTS = {
-    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05, "squeeze":  5},
+    1: {"name": "Very Fragile", "mass": 0.05, "damage":  5.0, "fragility": 0.05, "squeeze":  8},
     2: {"name": "Fragile",      "mass": 0.1,  "damage": 10.0, "fragility": 0.10, "squeeze":  8},
-    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20, "squeeze": 12},
+    3: {"name": "Medium",       "mass": 0.2,  "damage": 20.0, "fragility": 0.20, "squeeze": 16},
     4: {"name": "Robust",       "mass": 0.4,  "damage": 40.0, "fragility": 0.40, "squeeze": 22},
     5: {"name": "Very Robust",  "mass": 0.8,  "damage": 80.0, "fragility": 0.80, "squeeze": 35},
 }
@@ -180,9 +180,9 @@ def force_to_angle(force_n, max_force=10.0, open_angle=175):
 # Returns (left_raw, right_raw) as integers (0-1023).
 def read_fsr(ser):
     ser.write(b"FSR\n")
-    time.sleep(0.1)
+    time.sleep(0.04)
     fsr_l, fsr_r = 0, 0
-    deadline = time.time() + 0.3          # Wait max 0.3 seconds for response
+    deadline = time.time() + 0.15         # Wait max 0.15 seconds for response
     while time.time() < deadline:
         if ser.in_waiting:
             line = ser.readline().decode().strip()
@@ -422,8 +422,8 @@ class ForceGUI:
 # reference point for force_to_angle(), so the RL squeeze range
 # adapts to the size of whatever object is in the gripper.
 CONTACT_RAW_THRESHOLD = 50  # raw ADC units above baseline — robust to scale-factor noise
-CONTACT_STEP_DEG = 1      # degrees per contact-search step (small = precise, avoids overshoot)
-CONTACT_DELAY    = 0.15   # seconds between steps (longer = FSR has time to react)
+CONTACT_STEP_DEG = 2      # degrees per contact-search step (small = precise, avoids overshoot)
+CONTACT_DELAY    = 0.06   # seconds between steps (longer = FSR has time to react)
 
 def find_contact(ser, ctrl, obj, req_force, gui=None):
     angle = LIMITS['GRIPPER']['max']   # start fully open (175°)
